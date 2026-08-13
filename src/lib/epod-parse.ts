@@ -14,6 +14,8 @@ export type ParseResult = {
   totalParcels: number;
   days: string[];
   skipped: number;
+  excludedCancelled: number;
+  duplicateEvents: number;
 };
 
 const ALIASES: Record<string, string[]> = {
@@ -64,6 +66,48 @@ function toISODate(value: unknown): string | null {
   return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
+type StatusBucket = "delivered" | "attempt_failure" | "cancel" | "driver_received" | "assigned" | "other";
+
+const STATUS_PRIORITY: Record<StatusBucket, number> = {
+  delivered: 4,
+  attempt_failure: 3,
+  cancel: 3,
+  driver_received: 2,
+  assigned: 1,
+  other: 0,
+};
+
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+}
+
+function classifyStatus(raw: unknown): { bucket: StatusBucket; priority: number } {
+  const s = stripAccents(String(raw ?? "").toLowerCase().trim());
+  let bucket: StatusBucket = "other";
+  if (!s) bucket = "other";
+  else if (s.includes("cancel")) bucket = "cancel";
+  else if (s.includes("fail") || s.includes("fallid") || s.includes("fallo")) bucket = "attempt_failure";
+  else if (s.includes("deliver") || s.includes("entregad")) bucket = "delivered";
+  else if (
+    s.includes("driver_received") ||
+    s.includes("driver received") ||
+    s.includes("recib") ||
+    s.includes("recogid")
+  )
+    bucket = "driver_received";
+  else if (s.includes("assign") || s.includes("asignad")) bucket = "assigned";
+  return { bucket, priority: STATUS_PRIORITY[bucket] };
+}
+
+type RawEvent = {
+  waybill: string;
+  date: string;
+  zip: string;
+  dsp: string;
+  bucket: StatusBucket;
+  priority: number;
+};
+
 export async function parseEpodFile(file: File): Promise<ParseResult> {
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(buffer, { type: "array", cellDates: true });
@@ -77,37 +121,68 @@ export async function parseEpodFile(file: File): Promise<ParseResult> {
   const zipKey = findKey(headers, "zip");
   const dateKey = findKey(headers, "date");
   const dspKey = findKey(headers, "dsp");
+  const waybillKey = findKey(headers, "waybill");
+  const statusKey = findKey(headers, "status");
 
   if (!zipKey) throw new Error("No se encontró la columna de código postal (Zip Code).");
   if (!dateKey) throw new Error("No se encontró la columna de fecha (Task Date).");
+  if (!waybillKey)
+    throw new Error(
+      "No se encontró la columna de Waybill Number, necesaria para deduplicar eventos del mismo paquete.",
+    );
+  if (!statusKey)
+    throw new Error(
+      "No se encontró la columna de Task Status, necesaria para aplicar las reglas de estado (excluir cancelados).",
+    );
 
-  const map = new Map<string, EpodDailyRow>();
-  const days = new Set<string>();
+  const events: RawEvent[] = [];
   let skipped = 0;
-  let totalParcels = 0;
-
   for (const row of json) {
     const zip = normalizeZip(row[zipKey]);
     const date = toISODate(row[dateKey]);
-    if (!zip || !date) {
+    const waybill = String(row[waybillKey] ?? "").trim();
+    if (!zip || !date || !waybill) {
       skipped++;
       continue;
     }
     const dsp = dspKey ? String(row[dspKey] ?? "").trim() : "";
     const dspName = dsp || "Desconocido";
-    const key = `${zip}|${dspName}|${date}`;
-    days.add(date);
+    const { bucket, priority } = classifyStatus(row[statusKey]);
+    events.push({ waybill, date, zip, dsp: dspName, bucket, priority });
+  }
+
+  const winners = new Map<string, RawEvent>();
+  for (const ev of events) {
+    const key = `${ev.waybill}|${ev.date}`;
+    const existing = winners.get(key);
+    if (!existing || ev.priority >= existing.priority) {
+      winners.set(key, ev);
+    }
+  }
+  const duplicateEvents = events.length - winners.size;
+
+  const map = new Map<string, EpodDailyRow>();
+  const days = new Set<string>();
+  let totalParcels = 0;
+  let excludedCancelled = 0;
+  for (const ev of winners.values()) {
+    if (ev.bucket === "cancel") {
+      excludedCancelled++;
+      continue;
+    }
+    days.add(ev.date);
     totalParcels++;
+    const key = `${ev.zip}|${ev.dsp}|${ev.date}`;
     const existing = map.get(key);
     if (existing) {
       existing.parcels += 1;
     } else {
       map.set(key, {
-        zip_code: zip,
-        dsp_name: dspName,
-        task_date: date,
+        zip_code: ev.zip,
+        dsp_name: ev.dsp,
+        task_date: ev.date,
         parcels: 1,
-        locality: inferLocality(zip),
+        locality: inferLocality(ev.zip),
       });
     }
   }
@@ -117,5 +192,7 @@ export async function parseEpodFile(file: File): Promise<ParseResult> {
     totalParcels,
     days: [...days].sort(),
     skipped,
+    excludedCancelled,
+    duplicateEvents,
   };
 }
