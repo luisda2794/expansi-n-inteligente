@@ -14,7 +14,72 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      epod_daily: {
+        Row: {
+          created_at: string
+          dsp_name: string
+          id: string
+          locality: string | null
+          parcels: number
+          task_date: string
+          updated_at: string
+          zip_code: string
+        }
+        Insert: {
+          created_at?: string
+          dsp_name?: string
+          id?: string
+          locality?: string | null
+          parcels?: number
+          task_date: string
+          updated_at?: string
+          zip_code: string
+        }
+        Update: {
+          created_at?: string
+          dsp_name?: string
+          id?: string
+          locality?: string | null
+          parcels?: number
+          task_date?: string
+          updated_at?: string
+          zip_code?: string
+        }
+        Relationships: []
+      }
+      expansion_zips: {
+        Row: {
+          created_at: string
+          current_company: string | null
+          estimated_daily_volume: number
+          id: string
+          locality: string | null
+          notes: string | null
+          updated_at: string
+          zip_code: string
+        }
+        Insert: {
+          created_at?: string
+          current_company?: string | null
+          estimated_daily_volume?: number
+          id?: string
+          locality?: string | null
+          notes?: string | null
+          updated_at?: string
+          zip_code: string
+        }
+        Update: {
+          created_at?: string
+          current_company?: string | null
+          estimated_daily_volume?: number
+          id?: string
+          locality?: string | null
+          notes?: string | null
+          updated_at?: string
+          zip_code?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
