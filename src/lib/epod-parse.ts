@@ -1,0 +1,121 @@
+import * as XLSX from "xlsx";
+import { inferLocality, normalizeZip } from "./spain-zip";
+
+export type EpodDailyRow = {
+  zip_code: string;
+  dsp_name: string;
+  task_date: string; // YYYY-MM-DD
+  parcels: number;
+  locality: string;
+};
+
+export type ParseResult = {
+  rows: EpodDailyRow[];
+  totalParcels: number;
+  days: string[];
+  skipped: number;
+};
+
+const ALIASES: Record<string, string[]> = {
+  waybill: ["waybill number", "número de waybill", "numero de waybill", "waybill", "nº waybill"],
+  date: ["task date", "fecha de la tarea", "fecha tarea", "fecha", "date"],
+  status: ["task status", "estado de la tarea", "estado", "status"],
+  zip: ["zip code", "código postal", "codigo postal", "cp", "postcode", "zipcode"],
+  dsp: ["dsp name", "nombre de dsp", "nombre dsp", "dsp", "empresa"],
+  courier: ["courier name", "nombre del repartidor", "repartidor", "courier"],
+};
+
+const clean = (s: unknown) =>
+  String(s ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
+function findKey(headers: string[], type: keyof typeof ALIASES): string | null {
+  const wanted = ALIASES[type]!;
+  for (const h of headers) {
+    const c = clean(h);
+    if (wanted.includes(c)) return h;
+  }
+  for (const h of headers) {
+    const c = clean(h);
+    if (wanted.some((w) => c.includes(w))) return h;
+  }
+  return null;
+}
+
+function toISODate(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  if (typeof value === "number") {
+    const d = XLSX.SSF.parse_date_code(value);
+    if (!d) return null;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.y}-${pad(d.m)}-${pad(d.d)}`;
+  }
+  const s = String(value).trim();
+  let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (m) return `${m[1]}-${m[2]!.padStart(2, "0")}-${m[3]!.padStart(2, "0")}`;
+  m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (m) return `${m[3]}-${m[2]!.padStart(2, "0")}-${m[1]!.padStart(2, "0")}`;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
+export async function parseEpodFile(file: File): Promise<ParseResult> {
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+  const sheetName = wb.SheetNames[0];
+  if (!sheetName) throw new Error("El archivo no contiene ninguna hoja.");
+  const sheet = wb.Sheets[sheetName]!;
+  const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+  if (json.length === 0) throw new Error("La hoja está vacía.");
+
+  const headers = Object.keys(json[0]!);
+  const zipKey = findKey(headers, "zip");
+  const dateKey = findKey(headers, "date");
+  const dspKey = findKey(headers, "dsp");
+
+  if (!zipKey) throw new Error("No se encontró la columna de código postal (Zip Code).");
+  if (!dateKey) throw new Error("No se encontró la columna de fecha (Task Date).");
+
+  const map = new Map<string, EpodDailyRow>();
+  const days = new Set<string>();
+  let skipped = 0;
+  let totalParcels = 0;
+
+  for (const row of json) {
+    const zip = normalizeZip(row[zipKey]);
+    const date = toISODate(row[dateKey]);
+    if (!zip || !date) {
+      skipped++;
+      continue;
+    }
+    const dsp = dspKey ? String(row[dspKey] ?? "").trim() : "";
+    const dspName = dsp || "Desconocido";
+    const key = `${zip}|${dspName}|${date}`;
+    days.add(date);
+    totalParcels++;
+    const existing = map.get(key);
+    if (existing) {
+      existing.parcels += 1;
+    } else {
+      map.set(key, {
+        zip_code: zip,
+        dsp_name: dspName,
+        task_date: date,
+        parcels: 1,
+        locality: inferLocality(zip),
+      });
+    }
+  }
+
+  return {
+    rows: [...map.values()],
+    totalParcels,
+    days: [...days].sort(),
+    skipped,
+  };
+}
