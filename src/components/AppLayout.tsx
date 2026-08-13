@@ -1,9 +1,10 @@
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { MapPinned, Upload, Route as RouteIcon } from "lucide-react";
+import { Map, MapPinned, Upload, Route as RouteIcon } from "lucide-react";
 
 const navItems = [
   { to: "/", label: "Subir EPOD", icon: Upload },
+  { to: "/mapa", label: "Mapa de cobertura", icon: Map },
   { to: "/expansion", label: "CPs de expansión", icon: MapPinned },
 ] as const;
 
