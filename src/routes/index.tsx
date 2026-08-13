@@ -1,11 +1,30 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpDown, FileSpreadsheet, Loader2, Upload } from "lucide-react";
+import { ArrowUpDown, Download, FileSpreadsheet, Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
+import {
+  Line,
+  LineChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { supabase } from "@/integrations/supabase/client";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -46,11 +65,24 @@ type Summary = {
   avg: number;
 };
 
+function toIso(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+
+function addDays(d: Date, n: number) {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + n);
+  return copy;
+}
+
 function EpodPage() {
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [sortKey, setSortKey] = useState<"zip" | "avg">("avg");
   const [sortAsc, setSortAsc] = useState(false);
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
+  const [selected, setSelected] = useState<{ zip: string; dsp: string } | null>(null);
 
   const { data: records = [], isLoading } = useQuery({
     queryKey: ["epod_daily"],
@@ -70,44 +102,39 @@ function EpodPage() {
       const parsed = await parseEpodFile(file);
       if (parsed.rows.length === 0) throw new Error("No se han encontrado filas válidas.");
 
-      // Sumar con lo ya guardado para la misma combinación CP+DSP+día
-      const keys = parsed.rows.map((r) => r.zip_code);
-      const { data: existing, error: readError } = await supabase
-        .from("epod_daily")
-        .select("zip_code, dsp_name, task_date, parcels")
-        .in("zip_code", [...new Set(keys)]);
-      if (readError) throw readError;
-
-      const existingMap = new Map(
-        (existing ?? []).map((r) => [`${r.zip_code}|${r.dsp_name}|${r.task_date}`, r.parcels]),
-      );
-
-      const payload = parsed.rows.map((r) => ({
-        ...r,
-        parcels:
-          r.parcels + (existingMap.get(`${r.zip_code}|${r.dsp_name}|${r.task_date}`) ?? 0),
-      }));
-
-      for (let i = 0; i < payload.length; i += 500) {
+      for (let i = 0; i < parsed.rows.length; i += 500) {
         const { error } = await supabase
           .from("epod_daily")
-          .upsert(payload.slice(i, i + 500), { onConflict: "zip_code,dsp_name,task_date" });
+          .upsert(parsed.rows.slice(i, i + 500), { onConflict: "zip_code,dsp_name,task_date" });
         if (error) throw error;
       }
       return parsed;
     },
     onSuccess: (parsed) => {
-      toast.success(
-        `EPOD procesado: ${parsed.totalParcels} paquetes, ${parsed.days.length} día(s), ${new Set(parsed.rows.map((r) => r.zip_code)).size} CP.`,
-      );
+      const zips = new Set(parsed.rows.map((r) => r.zip_code)).size;
+      let msg = `EPOD procesado: ${parsed.totalParcels} paquetes, ${parsed.days.length} día(s), ${zips} CP.`;
+      if (parsed.excludedCancelled > 0) {
+        msg += ` ${parsed.excludedCancelled} cancelado(s) excluido(s).`;
+      }
+      if (parsed.duplicateEvents > 0) {
+        msg += ` ${parsed.duplicateEvents} evento(s) duplicado(s) del mismo waybill/día colapsados.`;
+      }
+      toast.success(msg);
       queryClient.invalidateQueries({ queryKey: ["epod_daily"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const filteredRecords = useMemo(() => {
+    if (!dateFrom && !dateTo) return records;
+    return records.filter(
+      (r) => (!dateFrom || r.task_date >= dateFrom) && (!dateTo || r.task_date <= dateTo),
+    );
+  }, [records, dateFrom, dateTo]);
+
   const summary = useMemo<Summary[]>(() => {
     const map = new Map<string, Summary & { dayset: Set<string> }>();
-    for (const r of records) {
+    for (const r of filteredRecords) {
       const key = `${r.zip_code}|${r.dsp_name}`;
       let entry = map.get(key);
       if (!entry) {
@@ -133,7 +160,7 @@ function EpodPage() {
       days: e.dayset.size,
       avg: e.dayset.size ? e.total / e.dayset.size : 0,
     }));
-  }, [records]);
+  }, [filteredRecords]);
 
   const sorted = useMemo(() => {
     const copy = [...summary];
@@ -152,12 +179,55 @@ function EpodPage() {
     }
   };
 
-  const totalDays = new Set(records.map((r) => r.task_date)).size;
-  const totalParcels = records.reduce((s, r) => s + r.parcels, 0);
-  const dsps = new Set(records.map((r) => r.dsp_name)).size;
+  const applyPreset = (preset: "all" | "last7" | "prevWeek") => {
+    const today = new Date();
+    if (preset === "all") {
+      setDateFrom("");
+      setDateTo("");
+    } else if (preset === "last7") {
+      setDateFrom(toIso(addDays(today, -6)));
+      setDateTo(toIso(today));
+    } else {
+      setDateFrom(toIso(addDays(today, -13)));
+      setDateTo(toIso(addDays(today, -7)));
+    }
+  };
+
+  const exportToExcel = () => {
+    if (sorted.length === 0) {
+      toast.error("No hay datos para exportar.");
+      return;
+    }
+    const data = sorted.map((r) => ({
+      "Código Postal": r.zip,
+      "Empresa / DSP": r.dsp,
+      Localidad: r.locality,
+      "Volumen medio diario": Number(r.avg.toFixed(2)),
+      "Días con actividad": r.days,
+      "Total paquetes": r.total,
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    ws["!cols"] = [{ wch: 14 }, { wch: 22 }, { wch: 20 }, { wch: 18 }, { wch: 16 }, { wch: 14 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Resumen CP");
+    const suffix = dateFrom || dateTo ? `_${dateFrom || "inicio"}_a_${dateTo || "hoy"}` : "";
+    XLSX.writeFile(wb, `expansion-rutas-resumen${suffix}.xlsx`);
+  };
+
+  const chartData = useMemo(() => {
+    if (!selected) return [];
+    return records
+      .filter((r) => r.zip_code === selected.zip && r.dsp_name === selected.dsp)
+      .sort((a, b) => a.task_date.localeCompare(b.task_date))
+      .map((r) => ({ date: r.task_date, parcels: r.parcels }));
+  }, [records, selected]);
+
+  const totalDays = new Set(filteredRecords.map((r) => r.task_date)).size;
+  const totalParcels = filteredRecords.reduce((s, r) => s + r.parcels, 0);
+  const dsps = new Set(filteredRecords.map((r) => r.dsp_name)).size;
 
   const stats = [
-    { label: "Códigos postales", value: new Set(records.map((r) => r.zip_code)).size },
+    { label: "Códigos postales", value: new Set(filteredRecords.map((r) => r.zip_code)).size },
     { label: "Empresas / DSP", value: dsps },
     { label: "Días distintos", value: totalDays },
     { label: "Paquetes acumulados", value: totalParcels },
@@ -177,7 +247,8 @@ function EpodPage() {
             <div>
               <p className="text-sm font-semibold text-foreground">Fichero EPOD (.xlsx / .xls / .csv)</p>
               <p className="text-sm text-muted-foreground">
-                Se detectan automáticamente CP, DSP y fecha, en inglés o español.
+                Se detectan automáticamente CP, DSP, waybill y estado, en inglés o español. Volver a
+                subir el mismo fichero es seguro: los valores se sobrescriben, no se suman.
               </p>
             </div>
           </div>
@@ -217,6 +288,52 @@ function EpodPage() {
           </div>
         ))}
       </div>
+
+      <section className="panel mb-6 p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="outline" onClick={() => applyPreset("all")}>
+              Todo el histórico
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => applyPreset("last7")}>
+              Últimos 7 días
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => applyPreset("prevWeek")}>
+              Semana anterior
+            </Button>
+          </div>
+          <div className="flex items-end gap-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="from" className="text-xs">
+                Desde
+              </Label>
+              <Input
+                id="from"
+                type="date"
+                className="h-9"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="to" className="text-xs">
+                Hasta
+              </Label>
+              <Input
+                id="to"
+                type="date"
+                className="h-9"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </div>
+          </div>
+          <Button size="sm" variant="ghost" onClick={exportToExcel} className="ml-auto">
+            <Download className="size-4" />
+            Exportar a Excel
+          </Button>
+        </div>
+      </section>
 
       <section className="panel overflow-hidden">
         <div className="border-b border-border px-5 py-3">
@@ -265,7 +382,11 @@ function EpodPage() {
               </TableRow>
             )}
             {sorted.map((row) => (
-              <TableRow key={`${row.zip}-${row.dsp}`}>
+              <TableRow
+                key={`${row.zip}-${row.dsp}`}
+                className="cursor-pointer"
+                onClick={() => setSelected({ zip: row.zip, dsp: row.dsp })}
+              >
                 <TableCell className="num font-semibold">{row.zip}</TableCell>
                 <TableCell>{row.dsp}</TableCell>
                 <TableCell className="text-muted-foreground">{row.locality}</TableCell>
@@ -281,6 +402,45 @@ function EpodPage() {
           </TableBody>
         </Table>
       </section>
+
+      <Dialog open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              Evolución diaria — CP {selected?.zip} · {selected?.dsp}
+            </DialogTitle>
+            <DialogDescription>
+              Volumen de paquetes por día en todo el histórico disponible.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="h-72 w-full">
+            {chartData.length === 0 ? (
+              <p className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                No hay datos suficientes para mostrar la evolución.
+              </p>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <Tooltip
+                    formatter={(value: number) => [value, "Paquetes"]}
+                    labelFormatter={(label) => `Fecha: ${label}`}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="parcels"
+                    stroke="var(--color-primary)"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </AppLayout>
   );
 }
