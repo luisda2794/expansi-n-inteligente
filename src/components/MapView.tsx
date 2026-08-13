@@ -104,7 +104,22 @@ function CoverageLayer({
     });
   };
 
-  return <GeoJSON ref={layerRef} data={data as never} style={styleFor as never} onEachFeature={onEachFeature as never} />;
+  // react-leaflet's <GeoJSON> solo construye la capa Leaflet a partir de
+  // `data` en el montaje inicial: si los datos llegan de forma asíncrona
+  // (como aquí, tras descargar el geojson), un cambio posterior de `data`
+  // no se refleja. Forzamos un remount con una key derivada del propio
+  // conjunto de CP para que la capa se reconstruya cuando llegan los datos.
+  const key = data.features.map((f) => zipOf(f)).sort().join(",");
+
+  return (
+    <GeoJSON
+      key={key}
+      ref={layerRef}
+      data={data as never}
+      style={styleFor as never}
+      onEachFeature={onEachFeature as never}
+    />
+  );
 }
 
 function ExpansionLayer({
@@ -135,7 +150,9 @@ function ExpansionLayer({
     );
   };
 
-  return <GeoJSON data={data as never} style={style as never} onEachFeature={onEachFeature as never} />;
+  const key = data.features.map((f) => zipOf(f)).sort().join(",");
+
+  return <GeoJSON key={key} data={data as never} style={style as never} onEachFeature={onEachFeature as never} />;
 }
 
 export function MapView({ coverage, cpInfoByZip, expansion, expansionInfoByZip, activeCompany }: MapViewProps) {
