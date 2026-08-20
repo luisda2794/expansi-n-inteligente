@@ -80,6 +80,30 @@ export type Database = {
         }
         Relationships: []
       }
+      zip_geocodes: {
+        Row: {
+          created_at: string
+          display_name: string | null
+          lat: number
+          lon: number
+          zip_code: string
+        }
+        Insert: {
+          created_at?: string
+          display_name?: string | null
+          lat: number
+          lon: number
+          zip_code: string
+        }
+        Update: {
+          created_at?: string
+          display_name?: string | null
+          lat?: number
+          lon?: number
+          zip_code?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
