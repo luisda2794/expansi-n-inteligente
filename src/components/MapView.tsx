@@ -1,170 +1,117 @@
-import { useEffect, useRef } from "react";
-import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
+import { useEffect } from "react";
+import { MapContainer, TileLayer, CircleMarker, Marker, Circle, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
-import type { GeoJSON as LeafletGeoJSON, Layer, PathOptions, LeafletMouseEvent } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { colorForCompany } from "@/lib/company-colors";
-
-export type CpInfo = {
-  zip: string;
-  dsp: string;
-  locality: string;
-  avg: number;
-};
-
-export type ExpansionInfo = {
-  zip: string;
-  locality: string;
-  volume: number;
-  company: string | null;
-  notes: string | null;
-};
-
-type GeoFeature = { type: "Feature"; properties: Record<string, unknown> | null; geometry: unknown };
-type GeoFC = { type: "FeatureCollection"; features: GeoFeature[] };
+import type { Area, ClusterPoint } from "@/lib/geo/cluster";
 
 export type MapViewProps = {
-  coverage: GeoFC;
-  cpInfoByZip: Map<string, CpInfo>;
-  expansion: GeoFC | null;
-  expansionInfoByZip: Map<string, ExpansionInfo>;
+  points: ClusterPoint[];
+  areas: Area[];
   activeCompany: string | null;
+  showAreas: boolean;
 };
 
-function escapeHtml(s: string): string {
-  const map: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-  return s.replace(/[&<>"']/g, (c) => map[c]!);
+const AREA_COLOR = "#0f766e";
+
+function squareIcon(color: string, dimmed: boolean): L.DivIcon {
+  return L.divIcon({
+    className: "",
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+    html: `<span style="display:block;width:14px;height:14px;background:${color};border:2px solid #0f172a;opacity:${
+      dimmed ? 0.25 : 1
+    }"></span>`,
+  });
 }
 
-function zipOf(feature: GeoFeature): string {
-  return String(feature.properties?.["COD_POSTAL"] ?? "").padStart(5, "0");
-}
-
-function FitBounds({ data }: { data: GeoFC }) {
+function FitBounds({ points }: { points: ClusterPoint[] }) {
   const map = useMap();
   useEffect(() => {
-    if (!data.features.length) return;
-    try {
-      const layer = L.geoJSON(data as never);
-      const bounds = layer.getBounds();
-      if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24] });
-    } catch {
-      // Si algún polígono viene mal formado, mantenemos la vista por defecto.
-    }
-  }, [data, map]);
+    if (!points.length) return;
+    const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon] as [number, number]));
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [32, 32], maxZoom: 12 });
+  }, [points, map]);
   return null;
 }
 
-function CoverageLayer({
-  data,
-  cpInfoByZip,
-  activeCompany,
-}: {
-  data: GeoFC;
-  cpInfoByZip: Map<string, CpInfo>;
-  activeCompany: string | null;
-}) {
-  const layerRef = useRef<LeafletGeoJSON | null>(null);
-
-  const styleFor = (feature?: GeoFeature): PathOptions => {
-    const info = feature ? cpInfoByZip.get(zipOf(feature)) : undefined;
-    const color = info ? colorForCompany(info.dsp) : "#94a3b8";
-    const dimmed = Boolean(activeCompany) && info?.dsp !== activeCompany;
-    return {
-      color,
-      weight: 1,
-      fillColor: color,
-      fillOpacity: dimmed ? 0.08 : 0.55,
-      opacity: dimmed ? 0.25 : 0.9,
-    };
-  };
-
-  useEffect(() => {
-    layerRef.current?.setStyle(styleFor as never);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCompany, cpInfoByZip]);
-
-  const onEachFeature = (feature: GeoFeature, layer: Layer) => {
-    const zip = zipOf(feature);
-    const info = cpInfoByZip.get(zip);
-    layer.bindTooltip(
-      `<div style="font-size:12px;line-height:1.5">
-        <strong>${escapeHtml(zip)}</strong><br/>
-        ${escapeHtml(info?.locality || "—")}<br/>
-        ${escapeHtml(info?.dsp || "—")}<br/>
-        Vol. medio diario: ${info ? info.avg.toLocaleString("es-ES", { maximumFractionDigits: 1 }) : "—"}
-      </div>`,
-      { sticky: true },
-    );
-    layer.on("mouseover", () => (layer as unknown as { setStyle: (s: PathOptions) => void }).setStyle({ weight: 3 }));
-    layer.on("mouseout", () => layerRef.current?.resetStyle(layer as never));
-    layer.on("click", (e: LeafletMouseEvent) => {
-      const target = layer as unknown as { getBounds?: () => L.LatLngBounds };
-      if (target.getBounds) e.target._map?.fitBounds(target.getBounds(), { padding: [24, 24] });
-    });
-  };
-
-  // react-leaflet's <GeoJSON> solo construye la capa Leaflet a partir de
-  // `data` en el montaje inicial: si los datos llegan de forma asíncrona
-  // (como aquí, tras descargar el geojson), un cambio posterior de `data`
-  // no se refleja. Forzamos un remount con una key derivada del propio
-  // conjunto de CP para que la capa se reconstruya cuando llegan los datos.
-  const key = data.features.map((f) => zipOf(f)).sort().join(",");
-
+function PointPopup({ p }: { p: ClusterPoint }) {
   return (
-    <GeoJSON
-      key={key}
-      ref={layerRef}
-      data={data as never}
-      style={styleFor as never}
-      onEachFeature={onEachFeature as never}
-    />
+    <Popup>
+      <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+        <strong>{p.zip}</strong>
+        <br />
+        {p.locality || "—"}
+        <br />
+        {p.company}
+        <br />
+        Volumen diario: {p.volume.toLocaleString("es-ES", { maximumFractionDigits: 1 })}
+        <br />
+        <em>{p.source === "epod" ? "EPOD" : "Expansión (manual)"}</em>
+      </div>
+    </Popup>
   );
 }
 
-function ExpansionLayer({
-  data,
-  expansionInfoByZip,
-}: {
-  data: GeoFC;
-  expansionInfoByZip: Map<string, ExpansionInfo>;
-}) {
-  const style = (): PathOptions => ({
-    color: "#334155",
-    weight: 2,
-    dashArray: "5 4",
-    fillOpacity: 0,
-  });
-
-  const onEachFeature = (feature: GeoFeature, layer: Layer) => {
-    const zip = zipOf(feature);
-    const info = expansionInfoByZip.get(zip);
-    layer.bindTooltip(
-      `<div style="font-size:12px;line-height:1.5">
-        <strong>${escapeHtml(zip)} (candidato)</strong><br/>
-        ${escapeHtml(info?.locality || "—")}<br/>
-        Vol. estimado: ${info ? info.volume.toLocaleString("es-ES", { maximumFractionDigits: 1 }) : "—"}
-        ${info?.company ? `<br/>Empresa actual: ${escapeHtml(info.company)}` : ""}
-      </div>`,
-      { sticky: true },
-    );
-  };
-
-  const key = data.features.map((f) => zipOf(f)).sort().join(",");
-
-  return <GeoJSON key={key} data={data as never} style={style as never} onEachFeature={onEachFeature as never} />;
-}
-
-export function MapView({ coverage, cpInfoByZip, expansion, expansionInfoByZip, activeCompany }: MapViewProps) {
+export function MapView({ points, areas, activeCompany, showAreas }: MapViewProps) {
   return (
     <MapContainer center={[40.2, -3.7]} zoom={6} style={{ height: "100%", width: "100%" }} scrollWheelZoom>
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      <CoverageLayer data={coverage} cpInfoByZip={cpInfoByZip} activeCompany={activeCompany} />
-      {expansion && <ExpansionLayer data={expansion} expansionInfoByZip={expansionInfoByZip} />}
-      <FitBounds data={coverage} />
+
+      {showAreas &&
+        areas.map((a) => (
+          <Circle
+            key={`area-${a.id}`}
+            center={[a.center.lat, a.center.lon]}
+            radius={a.radiusMeters}
+            pathOptions={{ color: AREA_COLOR, weight: 2, dashArray: "6 4", fillColor: AREA_COLOR, fillOpacity: 0.08 }}
+          >
+            <Popup>
+              <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                <strong>{a.name}</strong>
+                <br />
+                {a.points.length} CP · Vol. total {a.volume.toLocaleString("es-ES", { maximumFractionDigits: 1 })}
+                <br />
+                Empresas: {a.companies.join(", ")}
+                <br />
+                CPs: {a.zips.join(", ")}
+              </div>
+            </Popup>
+          </Circle>
+        ))}
+
+      {points.map((p) => {
+        const color = colorForCompany(p.company);
+        const dimmed = Boolean(activeCompany) && p.company !== activeCompany;
+        if (p.source === "expansion") {
+          return (
+            <Marker key={`exp-${p.zip}`} position={[p.lat, p.lon]} icon={squareIcon(color, dimmed)}>
+              <PointPopup p={p} />
+            </Marker>
+          );
+        }
+        return (
+          <CircleMarker
+            key={`epod-${p.zip}`}
+            center={[p.lat, p.lon]}
+            radius={7}
+            pathOptions={{
+              color: "#0f172a",
+              weight: 1.5,
+              fillColor: color,
+              fillOpacity: dimmed ? 0.15 : 0.9,
+              opacity: dimmed ? 0.25 : 1,
+            }}
+          >
+            <PointPopup p={p} />
+          </CircleMarker>
+        );
+      })}
+
+      <FitBounds points={points} />
     </MapContainer>
   );
 }
