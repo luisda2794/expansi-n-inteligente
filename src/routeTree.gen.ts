@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ExpansionRouteImport } from './routes/expansion'
+import { Route as MapaRouteImport } from './routes/mapa'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +23,40 @@ const ExpansionRoute = ExpansionRouteImport.update({
   path: '/expansion',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MapaRoute = MapaRouteImport.update({
+  id: '/mapa',
+  path: '/mapa',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/expansion': typeof ExpansionRoute
+  '/mapa': typeof MapaRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/expansion': typeof ExpansionRoute
+  '/mapa': typeof MapaRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/expansion': typeof ExpansionRoute
+  '/mapa': typeof MapaRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/expansion'
+  fullPaths: '/' | '/expansion' | '/mapa'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/expansion'
-  id: '__root__' | '/' | '/expansion'
+  to: '/' | '/expansion' | '/mapa'
+  id: '__root__' | '/' | '/expansion' | '/mapa'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ExpansionRoute: typeof ExpansionRoute
+  MapaRoute: typeof MapaRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +75,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ExpansionRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mapa': {
+      id: '/mapa'
+      path: '/mapa'
+      fullPath: '/mapa'
+      preLoaderRoute: typeof MapaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ExpansionRoute: ExpansionRoute,
+  MapaRoute: MapaRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
