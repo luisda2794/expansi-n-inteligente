@@ -1,9 +1,11 @@
 import { useEffect } from "react";
-import { MapContainer, TileLayer, CircleMarker, Marker, Circle, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Marker, Circle, GeoJSON, Popup, useMap } from "react-leaflet";
+import type { Feature } from "geojson";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { colorForCompany } from "@/lib/company-colors";
 import type { Area, ClusterPoint } from "@/lib/geo/cluster";
+import { usePostalBoundaries } from "@/lib/geo/use-postal-boundaries";
 
 export type MapViewProps = {
   points: ClusterPoint[];
@@ -54,6 +56,8 @@ function PointPopup({ p }: { p: ClusterPoint }) {
 }
 
 export function MapView({ points, areas, activeCompany, showAreas }: MapViewProps) {
+  const { boundaries } = usePostalBoundaries(points.map((p) => p.zip));
+
   return (
     <MapContainer center={[40.2, -3.7]} zoom={6} style={{ height: "100%", width: "100%" }} scrollWheelZoom>
       <TileLayer
@@ -86,6 +90,31 @@ export function MapView({ points, areas, activeCompany, showAreas }: MapViewProp
       {points.map((p) => {
         const color = colorForCompany(p.company);
         const dimmed = Boolean(activeCompany) && p.company !== activeCompany;
+        const boundary = boundaries.get(p.zip);
+
+        if (boundary) {
+          const feature: Feature = {
+            type: "Feature",
+            properties: {},
+            geometry: boundary.geometry as Feature["geometry"],
+          };
+          return (
+            <GeoJSON
+              key={`${p.source}-${p.zip}`}
+              data={feature}
+              style={{
+                color: "#0f172a",
+                weight: 1.5,
+                fillColor: color,
+                fillOpacity: dimmed ? 0.12 : 0.45,
+                opacity: dimmed ? 0.25 : 1,
+              }}
+            >
+              <PointPopup p={p} />
+            </GeoJSON>
+          );
+        }
+
         if (p.source === "expansion") {
           return (
             <Marker key={`exp-${p.zip}`} position={[p.lat, p.lon]} icon={squareIcon(color, dimmed)}>
